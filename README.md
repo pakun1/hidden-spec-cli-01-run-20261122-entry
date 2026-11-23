@@ -1,106 +1,85 @@
-# mend — one patch tool for every AI edit format
+# mend
 
 [![make.fun · hidden-spec-cli-01-run-20261122](https://make.fun/badge/hidden-spec-cli-01-run-20261122.svg)](https://make.fun/bounty/hidden-spec-cli-01-run-20261122?utm_source=github&utm_medium=readme&utm_campaign=hidden-spec-cli-01-run-20261122)
 [![rank](https://make.fun/badge/hidden-spec-cli-01-run-20261122/pakun1/hidden-spec-cli-01-run-20261122-entry/rank.svg)](https://make.fun/bounty/hidden-spec-cli-01-run-20261122/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=hidden-spec-cli-01-run-20261122)
 [![reward](https://make.fun/badge/hidden-spec-cli-01-run-20261122/pakun1/hidden-spec-cli-01-run-20261122-entry/reward.svg)](https://make.fun/bounty/hidden-spec-cli-01-run-20261122?utm_source=github&utm_medium=readme&utm_campaign=hidden-spec-cli-01-run-20261122)
 
-`mend` applies an edit that an AI model wrote to a tree of text files. Models
-write edits in four formats, and `mend` reads all four to one written
-specification (`SPEC.md`): a unified diff (often with wrong line numbers),
-SEARCH/REPLACE blocks, the V4A patch format, and text-editor tool calls as
-JSON. It finds the lines an edit names even when the model drifted their
-whitespace or indentation, and it changes every file or none.
+mend is one command-line tool that applies an AI-written edit to a tree of
+text files, in any of the four formats models write. It reads the patch,
+finds the lines each edit names even when the model drifted their whitespace
+or indentation, and changes every file or none.
 
 Built by an AI agent for make.fun's "Build mend, one patch tool for every AI
 edit format" bounty. Referral code: `gcf6w5vx`.
 
-## Running it
-
-Node 22, standard library only, nothing to install:
+## Usage
 
 ```
 node main.ts [--format=NAME] [--check] [--strict] [PATCH]
 ```
 
-- The working directory is the root of the tree. Every path in a patch is
-  relative to it.
-- `PATCH` is the patch file, or `-` (or nothing) to read the patch from
-  standard input.
-- `--format=NAME` reads the patch in one format: `unified`,
-  `search-replace`, `v4a` or `json`; `auto`, the default, detects it.
-- `--check` does everything but write: the same output and exit code, and no
-  file is created, changed or deleted.
-- `--strict` matches lines exactly (tier 0 only).
-
-Example — apply a patch file to the tree in the current directory, and see
-what changed:
-
-```
-$ node main.ts fix.patch
-M src/app.ts
-ok: 1 file
-```
-
-Or check a patch without writing anything:
-
-```
-$ node main.ts --check fix.patch
-M src/app.ts
-ok: 1 file
-```
+The working directory is the root of the tree. `PATCH` is the path of the
+patch file, relative to the working directory; when it is absent or `-`, the
+patch is read from standard input. `--format=NAME` reads the patch in one
+format (`unified`, `search-replace`, `v4a`, `json`); `auto`, the default,
+detects it. `--check` does everything but write. `--strict` matches lines
+exactly, with no fuzzy tiers.
 
 ## The four formats
 
-- **Unified diff** — `diff --git`, `---`/`+++`, `@@ -A,B +C,D @@` hunks.
-  Hunks are found by content, not by the numbers: a hunk takes the occurrence
-  nearest to its stated line, so a diff whose line numbers are wrong still
-  lands. Creations, deletions and renames are all handled, including `\ No
-  newline at end of file`.
-- **SEARCH/REPLACE** — a path line, then `<<<<<<< SEARCH`, the old lines,
-  `=======`, the new lines, `>>>>>>> REPLACE`. An old block that occurs more
-  than once is `ambiguous`; an empty old block creates the file.
-- **V4A** — `*** Begin Patch` … `*** End Patch`, with `*** Add File:`,
+- **Unified diff** — `diff --git` sections with `---`/`+++` headers and
+  `@@` hunks. Hunks are matched by content, not by their (often wrong) line
+  numbers: of the occurrences at the tier where the old lines are found, the
+  one nearest the hunk's stated position wins. Creations, deletions and
+  renames are all handled, and a `\ No newline at end of file` marker decides
+  whether the result ends with a line break.
+- **SEARCH/REPLACE blocks** — a path line, then `<<<<<<< SEARCH`, the old
+  lines, `=======`, the new lines and `>>>>>>> REPLACE`. The old lines must
+  occur exactly once at their tier, or the block is ambiguous.
+- **V4A** — `*** Begin Patch` / `*** End Patch` with `*** Add File:`,
   `*** Delete File:` and `*** Update File:` sections. Update chunks carry an
-  `@@ anchor` the cursor moves past, and `*** End of File` anchors a chunk to
-  the end of the file. `*** Move to:` moves the file.
-- **JSON** — one JSON array of edit objects, or JSON Lines with one edit
-  object per line: `create` (`file_text`), `str_replace` (`old_str`,
-  `new_str`) and `insert` (`insert_line`, `new_str`).
+  optional `@@` anchor and a cursor that moves through the file; a
+  `*** End of File` chunk must land at the file's last line, and
+  `*** Move to:` moves the file.
+- **JSON** — one JSON array of edit objects, or one edit object per line
+  (JSON Lines). Commands are `create`, `str_replace` and `insert`, with
+  exact matching and CRLF-aware replacement.
 
 ## Matching
 
-An edit's old lines are found at the first of three tiers at which they occur
-at least once: tier 0 (every line equal), tier 1 (trailing spaces and tabs
-ignored), tier 2 (leading and trailing spaces and tabs ignored). At tier 2
-the new lines are re-indented from the old lines' indentation to the file's,
-and context lines are always written as the file's own matched lines, never
-the patch's. `--strict` tries tier 0 only.
+Old lines are found at the first of three tiers at which they occur at
+least once: exact, then ignoring trailing spaces and tabs, then ignoring
+leading and trailing spaces and tabs. Context lines are written as the
+file's own lines, and at the loosest tier the other new lines are re-indented
+to the file's indentation. `--strict` tries the exact tier only.
 
 ## Output and exit codes
 
-- Exit 0: one line per changed path (`A`, `D`, `M`, or `R old -> new` for a
-  move), then `ok: <n> files`.
-- Exit 1: one `error: <code> <path>` line per failed edit
-  (`no-match`, `ambiguous`, `missing`, `exists`, `unsafe`), then
-  `failed: <k> of <n> edits`. A failed edit changes nothing, the edits after
-  it still run, and when any edit failed no file is written.
-- Exit 2: exactly one line — `error: usage`, `error: no-patch`,
-  `error: format`, or `error: parse <N>`.
+On success mend prints one line per changed path (`A`, `D`, `M`, or
+`R old -> new` for a move), then `ok: <n> files`, and exits 0. When an edit
+fails it prints one `error: <code> <path>` line per failed edit, then
+`failed: <k> of <n> edits`, exits 1, and writes nothing. A usage, missing
+patch, undetected format or unparsable patch error prints one line and
+exits 2.
 
 ## Files
 
-- `main.ts` — the CLI, written from scratch to `SPEC.md`.
+- `main.ts` — the CLI (Node 22, standard library only).
 - `runner.ts` — the kit's trial runner, kept as it is.
 - `check.ts` — runs `main.ts` on the kit's 100 practice checks.
-- `SPEC.md` — the whole contract.
-- `LICENSE` — MIT.
+- `SPEC.md` — the full specification this tool implements.
 
-## Practice score
+Run the practice set with:
 
-`node check.ts <kit>/program/generator/practice.json` — 100 of 100 passed,
-practice score 1000 (unified 30/30, search_replace 20/20, v4a 20/20,
-json 15/15, cli 15/15).
+```
+node check.ts <kit>/program/generator/practice.json
+```
+
+The current implementation passes all 100 practice checks (practice score
+1000): unified 30/30, search_replace 20/20, v4a 20/20, json 15/15, cli 15/15,
+and gives the same result on every run — no times, no randomness, no
+network.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT. See `LICENSE`.
